@@ -61,6 +61,64 @@ function isDiffHeader(line) {
 }
 
 /**
+ * Aligns diff markers (+ or -) in diff block lines
+ * Ensures all + and - markers are at the same column position (minimum position)
+ * while keeping the code content at its original position
+ */
+function alignDiffMarkers(blockLines) {
+  // Find all lines with diff markers and their positions
+  const markerLines = [];
+
+  for (let i = 1; i < blockLines.length - 1; i++) {
+    const line = blockLines[i];
+
+    // Skip diff headers
+    if (isDiffHeader(line)) {
+      continue;
+    }
+
+    const match = line.match(/^(\s*)([\+\-])(.*)$/);
+
+    if (match) {
+      const leadingSpaces = match[1].length;
+      const marker = match[2];
+      const content = match[3];
+
+      markerLines.push({
+        index: i,
+        leadingSpaces,
+        marker,
+        content
+      });
+    }
+  }
+
+  if (markerLines.length === 0) {
+    return blockLines;
+  }
+
+  // Find minimum indent level (minimum position of + or -)
+  const minIndent = Math.min(...markerLines.map(ml => ml.leadingSpaces));
+
+  // Create new block with aligned markers
+  const result = [...blockLines];
+
+  for (const ml of markerLines) {
+    // Calculate the absolute position of the code content (not the marker)
+    const contentSpaces = ml.content.match(/^(\s*)/)[1].length;
+    const codeStartPos = ml.leadingSpaces + 1 + contentSpaces; // +1 for the marker itself
+    const trimmedContent = ml.content.trim();
+
+    // Move marker to minIndent position, keep code at its original position
+    const spacesAfterMarker = codeStartPos - minIndent - 1;
+    const newLine = ' '.repeat(minIndent) + ml.marker + ' '.repeat(spacesAfterMarker) + trimmedContent;
+    result[ml.index] = newLine;
+  }
+
+  return result;
+}
+
+/**
  * Calculates the minimum indent level of code body lines in a diff block
  * (excluding the opening/closing ``` lines and diff headers)
  */
@@ -93,18 +151,21 @@ function calculateMinCodeIndent(blockLines) {
  * Formats a single diff block by adjusting indentation
  */
 function formatDiffBlock(blockLines, blockIndent) {
-  const minCodeIndent = calculateMinCodeIndent(blockLines);
+  // First, align diff markers (+ and -) to the minimum position
+  const alignedLines = alignDiffMarkers(blockLines);
+
+  const minCodeIndent = calculateMinCodeIndent(alignedLines);
   const spacesToAdd = Math.max(blockIndent - minCodeIndent, 0);
   const prefix = ' '.repeat(spacesToAdd);
 
   const formattedLines = [];
 
   // Keep first line (```diff) as is
-  formattedLines.push(blockLines[0]);
+  formattedLines.push(alignedLines[0]);
 
   // Add spacing to code body lines (excluding last line which is ```)
-  for (let i = 1; i < blockLines.length - 1; i++) {
-    const line = blockLines[i];
+  for (let i = 1; i < alignedLines.length - 1; i++) {
+    const line = alignedLines[i];
     if (line.trim().length === 0) {
       // Keep empty lines as empty
       formattedLines.push(line);
@@ -118,7 +179,7 @@ function formatDiffBlock(blockLines, blockIndent) {
   }
 
   // Keep last line (```) as is
-  formattedLines.push(blockLines[blockLines.length - 1]);
+  formattedLines.push(alignedLines[alignedLines.length - 1]);
 
   return formattedLines;
 }
