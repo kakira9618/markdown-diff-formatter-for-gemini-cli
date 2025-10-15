@@ -108,6 +108,10 @@ function formatDiffBlock(blockLines, blockIndent) {
     if (line.trim().length === 0) {
       // Keep empty lines as empty
       formattedLines.push(line);
+    } else if (isDiffHeader(line)) {
+      // For diff headers, align with blockIndent
+      const headerPrefix = ' '.repeat(blockIndent);
+      formattedLines.push(headerPrefix + line.trim());
     } else {
       formattedLines.push(prefix + line);
     }
