@@ -50,7 +50,8 @@ class DiffBlockParser {
    */
   consumeSpaces() {
     let count = 0;
-    while (!this.isEOF() && this.peek() === ' ') {
+    const maxSpaces = this.content.length; // 無限ループ対策
+    while (!this.isEOF() && this.peek() === ' ' && count < maxSpaces) {
       count++;
       this.advance();
     }
@@ -61,8 +62,13 @@ class DiffBlockParser {
    * 改行までスキップ
    */
   skipToNewline() {
+    const startPos = this.pos;
     while (!this.isEOF() && this.peek() !== '\n') {
       this.advance();
+      // 無限ループ対策: 位置が進んでいない場合は強制終了
+      if (this.pos === startPos) {
+        throw new Error('Internal error: Position not advancing in skipToNewline');
+      }
     }
     if (!this.isEOF() && this.peek() === '\n') {
       this.advance();
@@ -137,15 +143,29 @@ class DiffBlockParser {
    *   DiffBlock -> DiffBlockStart Content DiffBlockEnd
    */
   parse() {
+    const maxIterations = this.content.length * 2; // 無限ループ対策
+    let iterations = 0;
+
     while (!this.isEOF()) {
+      if (++iterations > maxIterations) {
+        throw new Error('Parse error: Maximum iterations exceeded (possible infinite loop)');
+      }
+
+      const beforePos = this.pos;
       const blockStart = this.parseDiffBlockStart();
 
       if (blockStart.success) {
         // diffブロックの内容の開始位置
         const contentStartPos = this.pos;
+        let innerIterations = 0;
 
         // 終了タグを探す
         while (!this.isEOF()) {
+          if (++innerIterations > maxIterations) {
+            throw new Error('Parse error: Maximum iterations exceeded while searching for block end');
+          }
+
+          const innerBeforePos = this.pos;
           const blockEnd = this.parseDiffBlockEnd();
 
           if (blockEnd.success) {
@@ -174,10 +194,20 @@ class DiffBlockParser {
 
           // 終了タグでなければ、次の行へ
           this.skipToNewline();
+
+          // 無限ループ対策: 位置が進んでいることを確認
+          if (this.pos === innerBeforePos && !this.isEOF()) {
+            throw new Error('Parse error: Position not advancing in inner loop');
+          }
         }
       } else {
         // diffブロックでなければ1文字進む
         this.advance();
+      }
+
+      // 無限ループ対策: 位置が進んでいることを確認
+      if (this.pos === beforePos && !this.isEOF()) {
+        throw new Error('Parse error: Position not advancing in outer loop');
       }
     }
 
@@ -189,8 +219,19 @@ class DiffBlockParser {
  * diffブロックの内容を整形
  */
 function formatDiffBlock(content, indentLevel) {
+  // 入力の妥当性チェック
+  if (typeof content !== 'string') {
+    throw new TypeError('formatDiffBlock: content must be a string');
+  }
+  if (typeof indentLevel !== 'number' || indentLevel < 0) {
+    throw new TypeError('formatDiffBlock: indentLevel must be a non-negative number');
+  }
+  if (indentLevel > 1000) {
+    throw new RangeError('formatDiffBlock: indentLevel too large (max 1000)');
+  }
+
   const lines = content.split('\n');
-  const formattedLines = lines.map(line => {
+  const formattedLines = lines.map((line, index) => {
     // -または+で始まる行を処理
     if (line.startsWith('-') || line.startsWith('+')) {
       const prefix = line[0]; // '-' or '+'
@@ -220,28 +261,57 @@ function formatDiffBlock(content, indentLevel) {
  * Markdown全体を整形
  */
 function formatMarkdown(markdown) {
-  const parser = new DiffBlockParser(markdown);
-  const blocks = parser.parse();
-
-  if (blocks.length === 0) {
-    return markdown;
+  // 入力の妥当性チェック
+  if (typeof markdown !== 'string') {
+    throw new TypeError('formatMarkdown: input must be a string');
   }
 
-  // 後ろから置換していく（位置がずれないように）
-  let result = markdown;
-
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    const block = blocks[i];
-    const originalContent = markdown.substring(block.contentStartPos, block.contentEndPos);
-    const formattedContent = formatDiffBlock(originalContent, block.indentLevel);
-
-    result =
-      result.substring(0, block.contentStartPos) +
-      formattedContent +
-      result.substring(block.contentEndPos);
+  // 入力サイズの制限チェック（メモリ対策）
+  const MAX_INPUT_SIZE = 100 * 1024 * 1024; // 100MB
+  if (markdown.length > MAX_INPUT_SIZE) {
+    throw new RangeError(`formatMarkdown: input too large (max ${MAX_INPUT_SIZE} bytes)`);
   }
 
-  return result;
+  try {
+    const parser = new DiffBlockParser(markdown);
+    const blocks = parser.parse();
+
+    if (blocks.length === 0) {
+      return markdown;
+    }
+
+    // ブロックの位置が有効かチェック
+    for (const block of blocks) {
+      if (block.contentStartPos < 0 || block.contentEndPos > markdown.length ||
+          block.contentStartPos > block.contentEndPos) {
+        throw new Error('formatMarkdown: Invalid block position detected');
+      }
+    }
+
+    // 後ろから置換していく（位置がずれないように）
+    let result = markdown;
+
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const block = blocks[i];
+      const originalContent = markdown.substring(block.contentStartPos, block.contentEndPos);
+      const formattedContent = formatDiffBlock(originalContent, block.indentLevel);
+
+      result =
+        result.substring(0, block.contentStartPos) +
+        formattedContent +
+        result.substring(block.contentEndPos);
+    }
+
+    return result;
+  } catch (error) {
+    // パースエラーの場合は元の入力を返す（フェイルセーフ）
+    if (error.message.startsWith('Parse error:')) {
+      console.error('Warning: Parse error occurred, returning original input:', error.message);
+      return markdown;
+    }
+    // その他のエラーは再スロー
+    throw error;
+  }
 }
 
 /**
@@ -250,6 +320,7 @@ function formatMarkdown(markdown) {
 function main() {
   // 標準入力から読み込み
   let input = '';
+  const MAX_STDIN_SIZE = 100 * 1024 * 1024; // 100MB
 
   if (process.stdin.isTTY) {
     console.error('Error: This program reads from stdin. Usage: cat file.md | node format-diff.js');
@@ -260,13 +331,40 @@ function main() {
 
   process.stdin.on('data', (chunk) => {
     input += chunk;
+
+    // 入力サイズチェック
+    if (input.length > MAX_STDIN_SIZE) {
+      console.error(`Error: Input size exceeds maximum allowed size (${MAX_STDIN_SIZE} bytes)`);
+      process.exit(1);
+    }
   });
 
   process.stdin.on('end', () => {
-    const formatted = formatMarkdown(input);
-    process.stdout.write(formatted);
+    try {
+      const formatted = formatMarkdown(input);
+      process.stdout.write(formatted);
+    } catch (error) {
+      console.error('Error:', error.message);
+      if (error.stack) {
+        console.error(error.stack);
+      }
+      process.exit(1);
+    }
+  });
+
+  process.stdin.on('error', (error) => {
+    console.error('Error reading from stdin:', error.message);
+    process.exit(1);
   });
 }
 
 // プログラム実行
-main();
+try {
+  main();
+} catch (error) {
+  console.error('Fatal error:', error.message);
+  if (error.stack) {
+    console.error(error.stack);
+  }
+  process.exit(1);
+}
