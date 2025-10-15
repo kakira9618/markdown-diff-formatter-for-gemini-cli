@@ -1,4 +1,4 @@
-# markdown-diff-formatter-for-gemini-cli
+# markdown-diff-formatter-for-gemini
 
 Markdown内のdiffブロックを整形するツール。ネストされたdiffブロック内の`-`/`+`行のインデントを自動調整します。
 
